@@ -1,2 +1,4 @@
 # Ignore the configuration file with locally stored API keys
-/config.py
+config.py
+__pycache__
+.ipynb_checkpoints
