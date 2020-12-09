@@ -1,0 +1,2 @@
+# Ignore the configuration file with locally stored API keys
+/config.py
