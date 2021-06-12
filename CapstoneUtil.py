@@ -4,13 +4,16 @@ import ogr
 import shapely
 import time
 import folium
+from selenium import webdriver
+
 
 __all__ = [
-    'GMLtoGDF_CA',
+    'GMLtoGDF',
     'fillCity',
     'addToCity',
     'selectRegion',
     'getGDFBounds',
+    'totalCentroid',
     'updateCity',
     'getCityByName',
     'getCityGroup',
@@ -18,8 +21,11 @@ __all__ = [
     'extendBound',
     'extendBounds',
     'mapCitiesAdjacent',
+    'html2image',
+    'showImage',
+    'mapCitiesAdjacentByImage',
     'makeValidByBuffer',
-    'makeValidByOGR'
+    'makeValidByOGR',
     'normalizeRows',
     'thresholdAreas',
     'normalizeAreas',
@@ -29,15 +35,29 @@ __all__ = [
     'swapXY'
 ]
 
-def GMLtoGDF_CA(filename):
+def GMLtoGDF(filename):
+    '''Reads Statistics Canada gml boundary file into a GeoDataFrame'''
+    # Read in the file
     gdf = geopandas.read_file(filename)
-    gdf = gdf.set_crs(epsg=3347) # Needed only for FSA file, the others are 3347 and parsed correctly by geopandas, and the pdf in the zip file has the same projection parameters (FSA vs. DA, ADA, CT)
-    gdf['Area'] = gdf.geometry.to_crs(epsg=6931).area # Equal-area projection # MODIFY THIS to account for validity regions of each geometry
+    
+    # Set the coordinate reference system
+    # This line is needed only for the FSA file, all other files (DA, ADA, CT)
+    # are properly read as EPSG:3347, which is also specified for the FSA file
+    # in the provided documentation (92-179-g2016001-eng.pdf)
+    gdf = gdf.set_crs(epsg=3347)
+    
+    # Calculate the area in an equal-area projection
+    gdf['Area'] = gdf.geometry.to_crs(epsg=6931).area
+    
+    # Calculate the centroid in the as-read crs and convert to (lat, long)
     gdf['Centroid'] = gdf.geometry.centroid
-    gdf['Centroid'] = gdf['Centroid'].to_crs(epsg=4326) # Only the set geometry is converted with gdf.to_crs(); all other geometry-containing columns must be converted explicitly; here we convert all columns explicitly
+    gdf['Centroid'] = gdf['Centroid'].to_crs(epsg=4326)
     gdf['Centroid Latitude'] = gdf['Centroid'].geometry.y
     gdf['Centroid Longitude'] = gdf['Centroid'].geometry.x
-    gdf.drop(columns = 'Centroid', inplace=True) # Because WKT Point cannot be serialized to JSON, we drop the Centroid column and keep only its float components
+    # Drop the temporary centroid column since a WKT Point cannot be serialized
+    gdf.drop(columns = 'Centroid', inplace=True)
+    
+    # Return the corrected dataframe
     return gdf
 
 def fillCity(city, gdf, fieldname, method='equals', names=None):
@@ -111,6 +131,29 @@ def getGDFBounds(gdf):
     tmp = gdf.geometry.total_bounds
     return [[tmp[1],tmp[0]],[tmp[3],tmp[2]]]
 
+def totalCentroid(gdf):
+    '''Calculates the centroid (lat, long) of all GeoDataFrame geometries
+    
+    Calculates the area-weighted average of all component geometry centroids.
+    Requires a column 'Area' with the desired area.
+    Performs computation using the current crs of gdf.
+    Converts computed centroid to EPSG:4326 for output.
+    '''
+    # Timing with Statistics Canada Cartographic Digital Dissemination Area boudary file:
+    #  7:25    with unary_union after conversion
+    #  0:30.2  with totalCentroid after conversion
+    #  0:06.97 with totalCentroid (average of area-weighted centroid of each boundary)
+    # Old version code snippet:
+    #  tmp = gdf.to_crs(epsg=4326).geometry.unary_union
+    #  city['centroid'] = [tmp.centroid.y,tmp.centroid.x]
+    areas = gdf['Area']
+    x = gdf.centroid.x
+    y = gdf.centroid.y
+    total_area = areas.sum()
+    centroid_gdf = geopandas.GeoDataFrame({'geometry':[shapely.geometry.Point([sum(x*areas)/total_area, sum(y*areas)/total_area])]},crs=gdf.crs)
+    centroid_gdf = centroid_gdf.to_crs(epsg=4326)
+    return [centroid_gdf.geometry[0].y,centroid_gdf.geometry[0].x]    
+
 def updateCity(city, gdf):
     '''Populates the city dict using data from gdf
     
@@ -122,12 +165,12 @@ def updateCity(city, gdf):
     Will overwrite existing entries
     '''
     city['gdf'] = gdf
-    city['geojson'] = gdf.to_crs(epsg=4326).to_json() # Folium requires this coordinate reference system
-    #city['data'] = gdf.drop(columns=['Geometry']).copy(deep=True)
-    tmp = gdf.to_crs(epsg=4326).geometry.unary_union # Folium requires this coordinate reference system
-    city['centroid'] = [tmp.centroid.y,tmp.centroid.x]
-    tmp = tmp.envelope.boundary.coords.xy
-    city['bounds'] = [[min(tmp[1]),min(tmp[0])],[max(tmp[1]),max(tmp[0])]]
+    # Note: Folium requires EPSG:4326 and (lat (y), long (x)) coordinate order to display correctly
+    city['centroid'] = totalCentroid(gdf)
+    tmp = gdf.to_crs(epsg=4326)
+    city['geojson'] = tmp.to_json() 
+    tmp = tmp.total_bounds
+    city['bounds'] = [[tmp[1],tmp[0]],[tmp[3],tmp[2]]]
 
 def getCityByName(cityname):
     '''Returns the first city dict that matches cityname exactly'''
@@ -317,7 +360,7 @@ def extendBounds(bounds,method='nearestLeadingDigit',scale=10):
         return None    
     return extendBound(bounds,direction=['down','up'],method=method,scale=scale)
 
-def mapCitiesAdjacent(cities,propertyname,title='',tooltiplabels=None):
+def mapCitiesAdjacent(cities, propertyname, title='', tooltiplabels=None, show=False):
     '''Displays cities in separate adjacent maps
     
     Cities dict as above
@@ -332,11 +375,11 @@ def mapCitiesAdjacent(cities,propertyname,title='',tooltiplabels=None):
     if (not type(cities)==list) and type(cities)==dict:
         cities = [cities]
     
-    f = bre.Figure()
-    div_header = bre.Div(position='absolute',height='10%',width='100%',left='0%',top='0%').add_to(f)
+    f = bre.Figure(height='400px')
+    div_header = bre.Div(position='absolute',height='15%',width='100%',left='0%',top='0%').add_to(f)
 
     map_header = folium.Map(location=[0,0],control_scale=False,zoom_control=False,tiles=None,attr=False).add_to(div_header)
-    div_header2 = bre.Div(position='absolute',height='10%',width='97%',left='3%',top='0%').add_to(div_header)
+    div_header2 = bre.Div(position='absolute',height='15%',width='97%',left='3%',top='0%').add_to(div_header)
     html_header = '''<h3 align="left" style="font-size:16px;charset=utf-8"><b>{}</b></h3>'''.format(title)
     div_header2.get_root().html.add_child(folium.Element(html_header))
 
@@ -353,7 +396,7 @@ def mapCitiesAdjacent(cities,propertyname,title='',tooltiplabels=None):
         ).add_to(map_header) # .to_step(method='log', n=5, data=?), log has log labels but linear color scale
 
     for i, city in enumerate(cities):
-        div_map = bre.Div(position='absolute',height='80%',width=f'{(100/len(cities))}%',left=f'{(i*100/len(cities))}%',top='10%').add_to(f)
+        div_map = bre.Div(position='absolute',height='73%',width=f'{(100/len(cities))}%',left=f'{(i*100/len(cities))}%',top='15%').add_to(f)
 
         city_map = folium.Map(location=city['centroid'], control_scale=True)
         div_map.add_child(city_map)
@@ -376,12 +419,114 @@ def mapCitiesAdjacent(cities,propertyname,title='',tooltiplabels=None):
         if not tooltiplabels==None:
             m.add_child(folium.features.GeoJsonTooltip(tooltiplabels))
     
-    return display(f)
+    if show:
+        display(f)
+    
+    return f
+
+def html2image(img_path='tmp_img.png', html_path='tmp_map.html', size=None, delay=1, dpi_factor=1.0):
+    '''Renders an html file and saves a screenshot as an image
+
+    Parameters
+    ----------
+    img_path: str, relative path/filename to save the image to, extension used to determine format
+    html_path: str, relative path/filename of the html file to convert
+    size: (int, int) or None, horizontal and vertical pixels size of render window (default None)
+    delay: float, delay in seconds to allow for rendering, increase if output image file is not fully rendered (default 1)
+    dpi_factor: float>0, factor to scale natural dots per inch by for image saving
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Requires selenium, geckodriver, os, time
+    html_path might need to have .html suffix
+    Opens and closes a new headless browser instance for each call.  This prevents
+    leaving headless browsers running but results in significant overhead.  For
+    repeated calls consider using a persistent browser instance.
+    '''
+    # Set the preferred dpi factor
+    profile = webdriver.FirefoxProfile()
+    profile.set_preference("layout.css.devPixelsPerPx", str(float(dpi_factor)))
+    
+    # Headless mode maintains a clean desktop and is required to set the browser window size
+    opts = webdriver.FirefoxOptions()
+    opts.headless = True
+    driver = webdriver.Firefox(options=opts, firefox_profile=profile)
+
+    # Set the window size if it has been provided
+    #  This is before get so that maps resize properly
+    #  Though an alternative may be driver.navigate().refresh()
+    if not size is None:
+        driver.set_window_size(*size)
+
+    # Load the html file in the browser
+    #  Note backslashes are returned by os, myst be escaped in strings
+    driver.get('file:\\\\'+os.getcwd()+'\\'+html_path)
+
+    # Allow time to load the file and resources, then save and close
+    time.sleep(delay)
+    driver.save_screenshot(img_path)
+    driver.quit()
+
+def showImage(img_path, fig_size=(20,10)):
+    '''Display image file using matplotlib
+    
+    Parameters
+    ----------
+    img_path: str, path to the image file, relative or absolute
+    fig_size: (float,float), size in inches of the figure (horizontal,vertical) (default (20,10))
+    
+    Returns
+    -------
+    None
+    
+    Notes
+    -----
+    Requires matplotlib/%inline matplotlib, matplotlib.pyplot as plt
+    File path interpretation handled by matplotlib
+    '''
+    img = matplotlib.image.imread(img_path)
+    plt.figure(figsize=fig_size)
+    plt.imshow(img)
+    plt.tight_layout()
+    plt.axis('off');
+
+def mapCitiesAdjacentByImage(cities, propertyname, title, tooltiplabels, interactive_map, resave_image, map_name):
+    '''Convenience function to display adjacent maps of cities
+    
+    Displays an image of the map if available (potentially lower memory footprint).
+    Renders the interactive map if map image is not available.
+    Option to instead display interactive map used to generate map image.
+    
+    Uses current scope variables to display; must define:
+        MAP_HTML
+        MAP_SIZE
+        MAP_LOADTIME
+        MAP_DPIFACTOR
+        MAP_INTERACTIVEOVERRIDE
+        '''
+    display_interactive = interactive_map or MAP_INTERACTIVEOVERRIDE
+    render_image = display_interactive or resave_image
+    
+    if not display_interactive and not render_image:
+        try:
+            showImage(map_name)
+        except BaseException:
+            render_image = True
+    if render_image:
+        mapCitiesAdjacent(cities,propertyname,title,tooltiplabels,display_interactive).save(MAP_HTML)
+        if resave_image or not display_interactive: html2image(map_name,MAP_HTML,MAP_SIZE,MAP_LOADTIME,MAP_DPIFACTOR)
+    if not display_interactive and render_image:
+        showImage(map_name)
 
 def makeValidByBuffer(gdf, verbose=False):
     '''Returns a copy of the dataframe (or list thereof) with zero buffer applied to invalid geometries
     
-    Requires: geopandas, time'''
+    Requires: geopandas, time
+    '''
     unlist=False
     if type(gdf)!=list:
         gdf = [gdf]
@@ -401,7 +546,10 @@ def makeValidByBuffer(gdf, verbose=False):
     return ret
 
 def makeValidByOGR(gdf, verbose=False):
-    '''Returns a copy of the geodataframe (or list thereof) passed through ogr MakeValid'''
+    '''Returns a copy of the geodataframe (or list thereof) passed through ogr MakeValid
+    
+    Requires geopandas, shapely, ogr
+    '''
     unlist=False
     if type(gdf)!=list:
         gdf = [gdf]
@@ -424,30 +572,30 @@ def makeValidByOGR(gdf, verbose=False):
 
 def normalizeRows(areas, aslist=False):
     '''Normalizes each row of the input by its sum (numpy.array)'''
-    a = np.array(areas)
-    a = a / np.sum(a,axis=1)[:, np.newaxis]
-    return a.tolist() if aslist else a
+    a = numpy.array(areas)
+    a = a / numpy.sum(a,axis=1)[:, numpy.newaxis]
+    return [aa.tolist() for aa in a] if aslist else a
 
 def thresholdAreas(areas, threshold=1e-6, aslist=False):
     '''Zeros out elements of areas that are below the threshold (numpy.array(float))'''
-    a = np.array(areas)
+    a = numpy.array(areas)
     a_ratio = normalizeRows(areas)
     a[a_ratio<threshold] = 0
-    return a.tolist() if aslist else a
+    return [aa.tolist() for aa in a] if aslist else a
 
 def normalizeAreas(areas, threshold=1e-6, aslist=False):
     '''Thresholds then normalizes areas (numpy.array(float))'''
     a = thresholdAreas(areas, threshold)
     a = normalizeRows(a)
-    return a.tolist() if aslist else a
+    return [aa.tolist() for aa in a] if aslist else a
 
 def maximumAreas(areas, aslist=False):
     '''Zeros out non-maximum elements in each row of areas (numpy.array(int))
-    Test with e.g.: (max(np.sum(r,axis=1)), min(np.sum(r,axis=1)), np.sum(r))'''
-    a = np.array(areas)
-    a_max = np.max(a,axis=1)
-    r = (a >= a_max[:,np.newaxis]).astype(int)
-    return r.tolist() if aslist else r
+    Test with e.g.: (max(numpy.sum(r,axis=1)), min(numpy.sum(r,axis=1)), numpy.sum(r))'''
+    a = numpy.array(areas)
+    a_max = numpy.max(a,axis=1)
+    r = (a >= a_max[:,numpy.newaxis]).astype(int)
+    return [rr.tolist() for rr in r] if aslist else r
 
 def mergeBounds(bounds1,bounds2):
     '''Returns the bounding box encompassing two bounding boxes'''

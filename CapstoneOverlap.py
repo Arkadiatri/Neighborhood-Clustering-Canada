@@ -46,6 +46,7 @@ def countCoordinates(geom):
         count = [len(geom.exterior.coords) + sum([len(i.coords) for i in geom.interiors])]
     else:
         print(f'Geometry is not strictly Polygon or MultiPolygon: {geom.type}')
+        return None
     return sum(count)
 
 def maxSubCoordinates(geom):
@@ -122,8 +123,7 @@ def katana(geometry, threshold, count=0):
     TODO
     ----
     Check that shapely.geometry.GeometryCollection will be handled properly
-    
-    
+
     License
     -------
     The following code is released under the BSD 2-clause license:
@@ -261,11 +261,10 @@ def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, a
     
     Notes
     -----
-    Relies on geopandas, numpy as np, and time
+    Relies on geopandas, numpy, and time
     Returns None on input error after printing error description
     
     TODO:
-    check that operation is correct with input gdf index not reset to range(0,N)
     change area_epsg logic to choose epsg based on input geometry location/extent (potentially cutting geometry to evaluate area in multiple crs where those sections are more valid)
     '''
     if verbosity>=1: print("Beginning overlap determination")
@@ -338,8 +337,8 @@ def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, a
     
     # Create a column indicating if the geometry needs to be cut and a column with the cut geometry (as array of polygons)
     start_time = time.time()
-    gdf1['Do Cut'] = gdf1.geometry.apply(maxSubCoordinates)>vertex_limit
-    gdf2['Do Cut'] = gdf2.geometry.apply(maxSubCoordinates)>vertex_limit
+    gdf1['Do Cut'] = gdf1.geometry.apply(countCoordinates)>vertex_limit
+    gdf2['Do Cut'] = gdf2.geometry.apply(countCoordinates)>vertex_limit
     gdf1['Cut Array Geometry'] = [katanaByParts(g,vertex_limit) if d else [g] if g.type=='Polygon' else list(g) for d, g in zip(gdf1['Do Cut'].values, gdf1.geometry.values)]
     gdf2['Cut Array Geometry'] = [katanaByParts(g,vertex_limit) if d else [g] if g.type=='Polygon' else list(g) for d, g in zip(gdf2['Do Cut'].values, gdf2.geometry.values)]
     end_gmt = time.gmtime(time.time()-start_time)
@@ -642,14 +641,19 @@ def saveResults_(name,tuples,fileformat='db',compress=False):
     TODO
     ----
     Make fileformat determine save format
-
     '''
+    # Input checking
     if type(name)!=str:
         print('Error: name must be a string')
         return None
     if type(fileformat)!=str:
         print('Error: fileformat must be a string')
         return None
+    
+    # Make the directory if it does not exist
+    path = os.path.dirname(name)
+    if path!='':
+        os.makedirs(path, exist_ok=True)
     
     ret = []
     for v, s in tuples:
@@ -723,7 +727,7 @@ def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbos
     if savename is None:
         savename = loadname if not loadname is None else 'DEFAULT'
     
-    ret = None if loadname is None else loadResults(DIR_RESULTS+loadname)
+    ret = None if loadname is None else loadResults(loadname)
     recompute = False
     saveresults = False
     if ret is None:
@@ -749,7 +753,7 @@ def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbos
         gdf_union, areas = convertToOldResults(gdf_joined)
     
     if saveresults:
-        saveResults(DIR_RESULTS+savename, gdf_joined, gdf_union, areas)
-        print("Variables saved to file at "+DIR_RESULTS+savename)
+        saveResults(savename, gdf_joined, gdf_union, areas)
+        print("Variables saved to file at "+savename)
 
     return gdf_joined, gdf_union, areas
