@@ -231,7 +231,7 @@ def intersectionBySjoin(geom1, geom2):
     gdf_joined.set_geometry('Overlap Geometry',inplace=True)
     return shapely.ops.unary_union(gdf_joined.geometry)
 
-def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, area_epsg=6931, apply_buffer=False, threshold=None, vertex_limit=10000, check_inputs=True):
+def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, area_epsg=None, apply_buffer=False, threshold=None, vertex_limit=10000, check_inputs=True):
     '''Find all intersections between geometries in two geodataframes
     
     Parameters
@@ -242,7 +242,7 @@ def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, a
     keyfield2: column name in gdf2 which uniquely identifies each row and will be used to label the results
     areas_in: list of lists of overlap areas between geometries in gdf1 and gdf2, with dimensions [gdf2.shape[0]][gdf1.shape[0]], intersections will be calculated only for geometry pairs with nonzero entries (default None)
     verbosity: int, detail level of reporting during execution: 0=none, 1+=announce computation sections (default 1)
-    area_epsg: int, convert to this epsg for area calculation (default 6931)
+    area_epsg: int or None, convert to this epsg for area calculation, None means use crs of gdf1/gdf2 (default None)
     apply_buffer: bool, use .buffer(0) to coerce valid geometries in gdf1 and gdf2 (often works, sometimes corrupts geometry) (default False)
     threshold: float or None, a float value discards overlaps that area less than threshold fraction of the largest overlap for each geometry in gdf2 (default None)
     vertex_limit: int>3, limit geometry elements to at most this number of vertices when performing internal calculations (default 10000)
@@ -295,6 +295,10 @@ def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, a
             if len(areas_in)!=gdf2.shape[0] or N1!=gdf1.shape[0] or irreg:
                 print(f"Input areas_in must have size [{gdf2.shape[0]}][{gdf1.shape[0]}], actual shape is [{N2}][{N1}]{' with irregular second dimension length' if irreg else ''}")
                 return None
+        
+        # Apply default area_epsg if needed
+        if area_epsg is None:
+            area_epsg = gdf1.crs.to_epsg()
     
     end_gmt = time.gmtime(time.time()-start_time)
     if verbosity>=1: print(f'{end_gmt.tm_yday-1}d{time.strftime("%H:%M:%S",end_gmt)}'+(' Input checks passed' if check_inputs else ' Input checks bypassed'))
@@ -373,6 +377,7 @@ def intersectGDF(gdf1, keyfield1, gdf2, keyfield2, areas_in=None, verbosity=1, a
     start_time = time.time()
     init_len = gdf_joined.shape[0]
     gdf_joined.geometry = [cleanGeometry(g) for g in gdf_joined.geometry]
+    # gdf_joined.geometry = [g if g.is_valid else g.buffer(0) for g in gdf_joined.geometry] # Dubious necessity... perform this cleanup externally with makeValidByBuffer(gdf) if needed
     gdf_joined = gdf_joined.drop(numpy.where(gdf_joined.geometry.is_empty)[0]).reset_index(drop=True)
     end_gmt = time.gmtime(time.time()-start_time)
     if verbosity>=1: print(f'{end_gmt.tm_yday-1}d{time.strftime("%H:%M:%S",end_gmt)}  Empty overlaps removed, {init_len-gdf_joined.shape[0]} total')
@@ -695,7 +700,7 @@ def saveResults(name, gdf_joined, gdf_union, areas):
     
     return saveResults_(name,tuples,fileformat='db',compress=True)
 
-def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbosity=1, area_epsg=6931, apply_buffer=False):
+def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbosity=1, area_epsg=6931, apply_buffer=False, threshold=None):
     '''Returns the overlap of geometries, defaulting to file versions if possible
     
     Parameters
@@ -707,9 +712,9 @@ def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbos
     loadname: str or None, base name of files to load data from (None -> 'DEFAULT'), see saveResults() (default None)
     savename: str or None, base name of files to save data to (None -> loadname), see loadResults() (default None)
     verbosity: int, detail level of reporting during execution: 0=none, 1=10-100 updates (default 1)
-    area_epsg: int, convert to this epsg for area calculation (default 6931)
+    area_epsg: int or None, convert to this epsg for area calculation, use None for crs of gdf1/gdf2 (default None)
     apply_buffer: bool, apply a zero buffer to each geometry to ensure validity(default False)
-
+    threshold: float or None, a float value discards overlaps that area less than threshold fraction of the largest overlap for each geometry in gdf2 (default None)
     
     Returns
     -------
@@ -741,7 +746,7 @@ def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbos
                 saveresults = True
             else:             # Reconstruct from areas
                 print("Overlaps will be recomputed based on loaded variable 'areas'")
-                gdf_joined = intersectGDF(gdf1, key1, gdf2, key2, areas_in=areas, verbosity=1, area_epsg=6931, apply_buffer=False, threshold=None, vertex_limit=10000, check_inputs=True)
+                gdf_joined = intersectGDF(gdf1, key1, gdf2, key2, areas_in=areas, verbosity=verbosity, area_epsg=area_epsg, apply_buffer=apply_buffer, threshold=threshold, vertex_limit=10000, check_inputs=True)
                 gdf_union, areas = convertToOldResults(gdf_joined)
                 saveresults = True
         else:
@@ -749,7 +754,7 @@ def loadComputeSave(gdf1, key1, gdf2, key2, loadname=None, savename=None, verbos
 
     if recompute:
         print("Overlaps must be computed")
-        gdf_joined = intersectGDF(gdf1, key1, gdf2, key2, areas_in=None, verbosity=1, area_epsg=6931, apply_buffer=False, threshold=None, vertex_limit=10000, check_inputs=True)
+        gdf_joined = intersectGDF(gdf1, key1, gdf2, key2, areas_in=None, verbosity=verbosity, area_epsg=area_epsg, apply_buffer=apply_buffer, threshold=threshold, vertex_limit=10000, check_inputs=True)
         gdf_union, areas = convertToOldResults(gdf_joined)
     
     if saveresults:

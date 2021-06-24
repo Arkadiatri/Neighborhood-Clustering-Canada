@@ -54,6 +54,7 @@ def GMLtoGDF(filename):
     gdf['Centroid'] = gdf['Centroid'].to_crs(epsg=4326)
     gdf['Centroid Latitude'] = gdf['Centroid'].geometry.y
     gdf['Centroid Longitude'] = gdf['Centroid'].geometry.x
+    
     # Drop the temporary centroid column since a WKT Point cannot be serialized
     gdf.drop(columns = 'Centroid', inplace=True)
     
@@ -561,7 +562,9 @@ def makeValidByOGR(gdf, verbose=False):
         indb_invalid = ~gb.geometry.is_valid
         gb.geometry.loc[indb_invalid] = [
             shapely.wkb.loads(ogr.CreateGeometryFromWkb(g.to_wkb())
-                              .MakeValid().ExportToWkb())
+                              .MakeValid()
+                              .RemoveLowerDimensionSubGeoms()
+                              .ExportToWkb())
             for g in gb.geometry.loc[indb_invalid]]
         ret.append(gb)
         if verbose:
