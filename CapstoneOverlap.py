@@ -574,6 +574,7 @@ def loadResults_(name,tuples,fileformat='db',compress=False):
     ----
     Add option to change save format (text vs. binary)
     Make fileformat select the save format
+    Remove n from tuples, it is not used as the return order is same as tuples
     '''
     if type(name)!=str:
         print('Error: name must be a string')
@@ -590,7 +591,7 @@ def loadResults_(name,tuples,fileformat='db',compress=False):
                 ret.append(dill.loads(gzip.decompress(file.read()) if compress else file.read()))
         except (FileNotFoundError, IOError) as e:
             ret.append(None)
-            print(f'An error was encountered while reading from file {fn}: {e}')
+            print(f'ERROR on file read: {e}')
     return tuple(ret)
 
 def loadResults(name):
@@ -669,7 +670,7 @@ def saveResults_(name,tuples,fileformat='db',compress=False):
                 ret.append(1)
         except IOError as e:
             ret.append(0)
-            print(f'An error was encountered while writing to file {fn}: {e}')
+            print(f'ERROR on file write: {e}')
     return tuple(ret)
 
 def saveResults(name, gdf_joined, gdf_union, areas):
