@@ -4,7 +4,9 @@ import ogr
 import shapely
 import time
 import folium
-from selenium import webdriver
+import selenium.webdriver
+import requests
+import os
 
 
 __all__ = [
@@ -32,7 +34,9 @@ __all__ = [
     'maximumAreas',
     'mergeBounds',
     'boundsCenter',
-    'swapXY'
+    'swapXY',
+    'urlToFile',
+    'extractFileFromZip'
 ]
 
 def GMLtoGDF(filename):
@@ -449,13 +453,13 @@ def html2image(img_path='tmp_img.png', html_path='tmp_map.html', size=None, dela
     repeated calls consider using a persistent browser instance.
     '''
     # Set the preferred dpi factor
-    profile = webdriver.FirefoxProfile()
+    profile = selenium.webdriver.FirefoxProfile()
     profile.set_preference("layout.css.devPixelsPerPx", str(float(dpi_factor)))
     
     # Headless mode maintains a clean desktop and is required to set the browser window size
-    opts = webdriver.FirefoxOptions()
+    opts = selenium.webdriver.FirefoxOptions()
     opts.headless = True
-    driver = webdriver.Firefox(options=opts, firefox_profile=profile)
+    driver = selenium.webdriver.Firefox(options=opts, firefox_profile=profile)
 
     # Set the window size if it has been provided
     #  This is before get so that maps resize properly
@@ -611,3 +615,35 @@ def boundsCenter(bounds):
 def swapXY(coords):
     '''Swaps the latitude and longitude in a bounding box 4-tuple'''
     return [coords[1],coords[0],coords[3],coords[2]]
+
+def urlToFile(url, filename, overwrite=True, verbose=False):
+    '''Downloads from a url and saves it to filename
+    
+    Returns True if file was written, False otherwise
+    '''
+    try:
+        path = os.path.dirname(filename) if os.path.isabs(filename) else os.path.dirname(os.path.join(os.getcwd(),filename))
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        if os.path.isfile(filename) and not overwrite:
+            if verbose: print('File exists and will not be overwritten')
+            return False
+        response = requests.get(url)
+        if response.status_code==200:
+            with open(filename,'w+b') as f:
+                for chunk in response:
+                    f.write(chunk)
+            if verbose: print('File saved from url')
+            return True
+        if verbose: print('File not downloaded.  Status code:',response.status_code)
+        return False
+    except BaseException as e:
+        if verbose: print('Error saving file from url:',e)
+        return False
+
+def extractFileFromZip(zipfn, memfn, extfn, overwrite=True, verbose=False):
+    '''Extracts a single file memfn from zipfile zipfn and saves it to file extfn'''
+    with zipfile.ZipFile(zipfn, 'r') as zipObj:
+        zipObj.extract(memfn,
+                       os.path.dirname(extfn) if os.path.isabs(extfn) else os.path.dirname(os.path.join(os.getcwd(),extfn))
+                      )
