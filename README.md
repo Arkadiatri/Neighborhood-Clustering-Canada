@@ -39,6 +39,15 @@ Several techniques and features are used in this analysis which may be of intere
 * Generic _extendBound_ function for rounding of numbers or arrays in useful ways (e.g. nearest leading digit, nearest power, up or down)
 * Useful functions collected in _CapstoneUtil.py_ and _CapstoneOverlap.py_ modules
 
+NOTE: To run this project, create a file "config.py" in the main project directory and add your access keys to the following variables:
+
+    # This is a test, and is expected not to be uploaded to github
+    HERE_APIKEY = '...'
+    NM_AGENT = '...' # a nominatim agent name, not required
+    FOURSQUARE_CLIENT_ID = '...'
+    FOURSQUARE_CLIENT_SECRET = '...'
+    FOURSQUARE_ACCESS_TOKEN = '...'
+
 ## Results
 
 Illustrative plots are shown below.  See _Neighborhood-Clustering-Canada.ipynb_ for details.  The best clustering for a k-means model was obtained with k=5, but a much better result was obtained in the extensions section with a k=20 Gaussian mixture model fit to the first three principal components.  The final result is detailed at the end of this README.
